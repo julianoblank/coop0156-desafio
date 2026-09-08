@@ -290,6 +290,8 @@ Todos usam `Http::fake(['*/api/mock/bureau/*' => Http::response(...)])` para sim
 
 Para viabilizar os testes, foi criada `database/factories/AnaliseCreditoFactory.php` e adicionado o trait `HasFactory` ao model `AnaliseCredito`.
 
+Também foram adicionados testes de edge cases em `AnaliseCreditoTest.php`.
+
 ---
 
 ## Mensagens de erro em português

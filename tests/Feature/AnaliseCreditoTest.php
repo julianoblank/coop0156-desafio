@@ -166,4 +166,126 @@ class AnaliseCreditoTest extends TestCase
         $cliente = Cliente::where('cpf', '12345678903')->first();
         $this->assertEquals($cliente->id, $response->json('cliente_id'));
     }
+
+    // --- Edge cases ---
+
+    public function test_score_exatamente_400_aprova_na_faixa_de_4_5_por_cento(): void
+    {
+        $this->fakeBureau(['score' => 400]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload(['valor_solicitado' => 1000.00, 'renda_mensal' => 15000.00]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::APROVADO->value,
+                'score' => 400,
+                'taxa_juros' => '4.50',
+            ]);
+    }
+
+    public function test_score_exatamente_699_ainda_na_faixa_de_4_5_por_cento(): void
+    {
+        $this->fakeBureau(['score' => 699]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload(['valor_solicitado' => 1000.00, 'renda_mensal' => 15000.00]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::APROVADO->value,
+                'score' => 699,
+                'taxa_juros' => '4.50',
+            ]);
+    }
+
+    public function test_score_exatamente_700_ja_muda_para_faixa_de_2_9_por_cento(): void
+    {
+        $this->fakeBureau(['score' => 700]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload(['valor_solicitado' => 1000.00, 'renda_mensal' => 15000.00]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::APROVADO->value,
+                'score' => 700,
+                'taxa_juros' => '2.90',
+            ]);
+    }
+
+    public function test_score_exatamente_399_ainda_reprova_por_score_baixo(): void
+    {
+        $this->fakeBureau(['score' => 399]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload());
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::REPROVADO->value,
+                'motivo_rejeicao' => 'Score de crédito muito baixo',
+            ]);
+    }
+
+    public function test_renda_mensal_exatamente_1500_nao_reprova_por_renda_insuficiente(): void
+    {
+        $this->fakeBureau(['score' => 850]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload([
+            'renda_mensal' => 1500.00,
+            'valor_solicitado' => 3000.00,
+        ]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::APROVADO->value,
+            ]);
+    }
+
+    public function test_renda_mensal_um_centavo_abaixo_de_1500_reprova_por_renda_insuficiente(): void
+    {
+        $this->fakeBureau(['score' => 850]);
+
+        $response = $this->postJson('/api/analise-credito', $this->payload([
+            'renda_mensal' => 1499.99,
+            'valor_solicitado' => 3000.00,
+        ]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::REPROVADO->value,
+                'motivo_rejeicao' => 'Renda mínima insuficiente',
+            ]);
+    }
+
+    public function test_parcela_dentro_do_limite_de_30_por_cento_da_renda_aprova(): void
+    {
+        $this->fakeBureau(['score' => 550]);
+
+        // valor 12000 a 4,5% a.m. em 12x => parcela de R$ 1.540,00 (30% de 5140 = 1542,00)
+        $response = $this->postJson('/api/analise-credito', $this->payload([
+            'renda_mensal' => 5140.00,
+            'valor_solicitado' => 12000.00,
+        ]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::APROVADO->value,
+                'valor_parcela' => '1540.00',
+            ]);
+    }
+
+    public function test_parcela_um_centavo_acima_do_limite_de_30_por_cento_da_renda_reprova(): void
+    {
+        $this->fakeBureau(['score' => 550]);
+
+        // mesma parcela de R$ 1.540,00, mas 30% de 5130 = 1539,00 => passa a reprovar
+        $response = $this->postJson('/api/analise-credito', $this->payload([
+            'renda_mensal' => 5130.00,
+            'valor_solicitado' => 12000.00,
+        ]));
+
+        $response->assertCreated()
+            ->assertJsonFragment([
+                'status' => StatusAnalise::REPROVADO->value,
+                'motivo_rejeicao' => 'Comprometimento de renda superior a 30%',
+            ]);
+    }
 }
