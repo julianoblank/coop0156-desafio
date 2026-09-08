@@ -36,7 +36,7 @@ return [
     ],
 
     'score_bureau' => [
-        'url' => env('SCORE_BUREAU_API_URL', 'http://localhost:8000/api/mock/score'),
+        'url' => env('SCORE_BUREAU_API_URL', 'http://localhost:8000/api/mock/bureau'),
         'timeout' => (int) env('SCORE_BUREAU_TIMEOUT', 3),
     ],
 
