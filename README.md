@@ -139,6 +139,159 @@ Para viabilizar os testes, foi criada `database/factories/ClienteFactory.php` (n
 
 ---
 
+Análise de Crédito
+## Decisões estruturais desta etapa
+
+- **Lógica de negócio em um Service (`app/Services/AnaliseCreditoService.php`), não no controller.** É um critério de avaliação explícito do desafio. O `AnaliseCreditoController` ficou reduzido a: validar via Form Request, resolver a análise (404), checar o status (422) e delegar tudo o mais para o service. Toda a regra de crédito, a chamada ao Bureau e o tratamento de falhas moram no service.
+- **Form Request dedicado (`StoreAnaliseCreditoRequest`)**, seguindo a mesma decisão já tomada no CRUD de clientes — validação não é responsabilidade do controller.
+
+- **Cadastro automático do cliente.** O enunciado pede para criar o cliente automaticamente só com `nome`, `cpf` e `renda_mensal` — o formulário de análise (`analise.blade.php`) nunca coleta e-mail. Só que a tabela `clientes` (migration original do scaffold) tem `email` como `string` obrigatório e `unique`. Para não alterar o schema nem inventar um campo de e-mail que o enunciado não pede, optei por gerar um e-mail-placeholder determinístico a partir do CPF (`cliente-{cpf}@auto.coop0156.com`) apenas quando o cliente é criado por esse fluxo. Como o CPF já é único na tabela, o placeholder nunca colide. Isso resolve a constraint do banco sem tocar na migration nem no `ClienteController`/`StoreClienteRequest`, que continuam exigindo e-mail real de verdade quando o cliente é cadastrado pela própria API de clientes.
+
+---
+
+## `POST /api/analise-credito` — `solicitar`
+
+```php
+public function solicitar(StoreAnaliseCreditoRequest $request): JsonResponse
+{
+    $analise = $this->service->solicitar($request->validated());
+
+    return response()->json($analise, 201);
+}
+```
+
+**Validação (`StoreAnaliseCreditoRequest`):**
+
+```php
+'nome' => ['required', 'string', 'max:255'],
+'cpf' => ['required', 'digits:11'],
+'renda_mensal' => ['required', 'numeric', 'gt:0'],
+'tipo_credito' => ['required', Rule::enum(TipoCredito::class)],
+'valor_solicitado' => ['required', 'numeric', 'gt:0'],
+```
+
+`Rule::enum(TipoCredito::class)` garante que só `pessoal`, `imobiliario` ou `automotivo` passam, sem precisar duplicar essa lista como `in:...` — se um novo tipo de crédito for adicionado ao enum no futuro, a validação já acompanha.
+
+**Fluxo dentro do `AnaliseCreditoService::solicitar`:**
+
+1. **Localizar ou cadastrar o cliente** com `Cliente::firstOrCreate(['cpf' => $cpf], [...])`. Buscar por CPF é o identificador natural do domínio, e `firstOrCreate` evita duplicar cliente em solicitações repetidas para o mesmo CPF.
+2. **Persistir a análise com `status = pendente`** antes de consultar o Bureau — assim, mesmo que a chamada HTTP falhe, já existe um registro rastreável da tentativa (não se perde a solicitação).
+3. **Consultar o Bureau** com `Http::timeout(config('services.score_bureau.timeout'))->get("{$baseUrl}/{$cpf}")`, onde `$baseUrl = config('services.score_bureau.url')`. O scaffold original tinha esse config apontando por padrão para `/api/mock/score`, que não é a rota que existe (`/api/mock/bureau/{cpf}`) — corrigi o default em `config/services.php` e no `.env.example` para `/api/mock/bureau`. Montar a URL a partir da config (em vez de fixá-la com `url("/api/mock/bureau/{$cpf}")`) também deixa a base configurável via `.env` sem tocar em código — o que é útil para o workaround de duas portas do `php artisan serve` no Windows, descrito mais abaixo.
+4. **Tratar as falhas do Bureau num único lugar** (`consultarScore`), retornando `null` para qualquer uma das três formas de falha:
+   - `ConnectionException` — cobre o timeout do dígito `5` (delay de 5s): como o timeout configurado é 3s (`SCORE_BUREAU_TIMEOUT`), a chamada estoura antes da resposta chegar.
+   - `$response->failed()` — cobre o HTTP 500 do dígito `4`.
+   - `$response->json('score')` ausente/não numérico — cobre o JSON malformado do dígito `6`.
+
+   Quando `consultarScore` retorna `null`, a análise é atualizada para `reprovado` com o motivo "Não foi possível consultar o Bureau de Crédito no momento." e a resposta HTTP continua sendo `201` com um corpo limpo — nunca um 500 ou uma exception estourando para o cliente da API.
+5. **Aplicar as regras de crédito, nesta ordem** (a ordem importa porque a primeira reprovação encontrada já encerra a avaliação):
+   1. `renda_mensal < 1500` → reprovado, sem nem olhar o score.
+   2. `score < 400` → reprovado.
+   3. `score` entre 400 e 699 → taxa de 4,5% a.m.; `score >= 700` → taxa de 2,9% a.m.
+   4. Calculada a parcela (juros simples sobre o valor solicitado, dividido em 12 parcelas fixas), se ela ultrapassar 30% da renda mensal, a análise é **revertida para reprovado** mesmo já tendo passado nas faixas de score — por isso essa checagem é sempre a última.
+
+O endpoint sempre responde `201 Created`, aprovado ou reprovado: a criação do recurso `AnaliseCredito` foi bem-sucedida em ambos os casos, o resultado do negócio (aprovado/reprovado) é um dado dentro do corpo, não um código de erro HTTP. Só a validação de entrada (Form Request) gera `422`.
+
+---
+
+## `POST /api/analise-credito/{id}/contratar` — `contratar`
+
+```php
+public function contratar(int $id): JsonResponse
+{
+    $analise = AnaliseCredito::findOrFail($id);
+
+    if ($analise->status !== StatusAnalise::APROVADO) {
+        return response()->json([
+            'message' => 'A análise de crédito não está aprovada para contratação.',
+        ], 422);
+    }
+
+    $analise = $this->service->contratar($analise);
+
+    return response()->json($analise);
+}
+```
+
+**Por quê `findOrFail` em vez de route model binding:** a rota (`routes/api.php`, que não modifiquei) declara o parâmetro como `{id}`. Renomear para `{analise}` só para habilitar o binding implícito não trazia benefício nenhum e um `findOrFail` manual já resulta em 404 JSON automático (o `bootstrap/app.php` já força `shouldRenderJsonWhen` para `api/*`).
+
+**Diferencial de filas implementado:** em vez de atualizar direto para `contratado`, o `AnaliseCreditoService::contratar` atualiza o status para `processando_contratacao` e despacha `ProcessarContratacaoJob::dispatch($analise->id)`. Passo o `id` (não a instância inteira) para manter o payload da fila pequeno e sempre buscar o estado mais atual do banco quando o job rodar. Depois do dispatch, chamo `$analise->refresh()` antes de devolver a resposta — com `QUEUE_CONNECTION=sync` (o padrão em `phpunit.xml` e útil para rodar localmente sem worker) o job roda na hora, então sem o `refresh()` a resposta ficaria presa em `processando_contratacao` mesmo já tendo virado `contratado` no banco.
+
+### `ProcessarContratacaoJob`
+
+```php
+public function handle(): void
+{
+    $analise = AnaliseCredito::find($this->analiseId);
+
+    if (! $analise) {
+        Log::warning("ProcessarContratacaoJob: análise #{$this->analiseId} não encontrada.");
+        return;
+    }
+
+    $analise->update(['status' => StatusAnalise::CONTRATADO]);
+
+    Log::info("Contratação da análise #{$this->analiseId} finalizada com sucesso.");
+}
+```
+
+O guard de "análise não encontrada" é defensivo para o cenário de fila assíncrona real (`QUEUE_CONNECTION=database` + `queue:work`): entre o dispatch e a execução do job, o registro poderia teoricamente ter sido removido; o job loga um aviso e não quebra em vez de lançar `ModelNotFoundException` sem handler num worker em background.
+
+---
+
+## ⚠️ Testando `solicitar` manualmente com `php artisan serve` (Windows)
+
+Ao testar o `POST /api/analise-credito` pelo Postman usando só `php artisan serve`, a requisição pode **travar por ~3 segundos e voltar reprovada por falha no Bureau**, mesmo com um CPF que deveria aprovar. Isso não é um bug da regra de negócio — é uma característica do servidor embutido do PHP no Windows:
+
+- O `php artisan serve` no Windows é **single-threaded**: atende uma conexão por vez.
+- Ao processar a requisição do Postman, o `AnaliseCreditoService` faz uma **segunda chamada HTTP para o próprio servidor** (`GET /api/mock/bureau/{cpf}`), simulando a integração com o Bureau externo.
+- Como o processo já está ocupado com a primeira requisição, ele não consegue atender a segunda — a chamada trava até estourar o `SCORE_BUREAU_TIMEOUT` (3s por padrão), e a análise cai no fluxo de "falha do Bureau".
+- Em Linux/macOS isso normalmente não acontece porque o `php artisan serve` consegue subir múltiplos workers via `PHP_CLI_SERVER_WORKERS` (usa `pcntl`, extensão que builds Windows do PHP não trazem).
+
+Em produção isso nunca ocorreria (o Bureau real estaria em outro servidor); é só um artefato de testar a integração contra um mock que mora na própria aplicação.
+
+**Como contornar sem instalar outro servidor:** suba duas instâncias do `php artisan serve` em portas diferentes — uma para o Postman chamar, outra dedicada só a responder a chamada interna ao Bureau, para elas nunca disputarem a mesma conexão.
+
+```bash
+# Terminal 1 — a API que o Postman vai chamar
+php artisan serve --port=8000
+
+# Terminal 2 — só para responder a chamada interna ao mock do Bureau
+php artisan serve --port=8001
+```
+
+E aponte a URL do Bureau para a segunda instância no `.env`:
+
+```env
+SCORE_BUREAU_API_URL=http://127.0.0.1:8001/api/mock/bureau
+```
+
+Depois de editar o `.env`, reinicie o **Terminal 1** para ele carregar o novo valor (o Terminal 2 pode continuar rodando — ele só existe para atender a chamada de loopback). O Postman continua batendo em `http://localhost:8000/...` normalmente.
+
+Isso só é necessário para testes manuais via Postman no Windows. Os testes automatizados (`php artisan test`) não sofrem com isso, pois usam `Http::fake()` e nunca fazem uma chamada de rede de verdade.
+
+### Cuidado extra se estiver debugando com Xdebug
+
+Se você usa Xdebug (ex.: `.vscode/launch.json` com "Listen for Xdebug"), as duas instâncias acima compartilham o **mesmo `php.ini`** — logo, as duas tentam abrir uma sessão de debug a cada requisição (`xdebug.start_with_request=yes`). Se você parar num breakpoint na requisição da porta 8000 (a do Postman), o VSCode fica ocupado com aquela sessão pausada; a chamada interna para a porta 8001 então tenta abrir a *sua própria* sessão de debug e fica esperando o VSCode ficar livre — travando até estourar o timeout, mesmo com as duas portas configuradas.
+
+## Testes (`tests/Feature/AnaliseCreditoTest.php`)
+
+Cobre os 8 cenários pedidos no enunciado, um teste para cada:
+
+1. Aprovação com score alto (`850`) e taxa de 2,9%.
+2. Aprovação com score médio (`550`) e taxa de 4,5%.
+3. Reprovação por renda mensal insuficiente.
+4. Reprovação por score muito baixo (`150`).
+5. Reprovação por comprometimento de renda (parcela > 30% da renda).
+6. Falha da API do Bureau (HTTP 500) — confirma resposta `201` limpa, sem crash, e `score` nulo salvo no banco.
+7. Confirmação de contratação (`contratar`) de uma análise aprovada, com `Queue::fake()` + `Queue::assertPushed` confirmando que `ProcessarContratacaoJob` foi despachado com o `id` correto.
+8. Criação automática do cliente ao solicitar análise com CPF novo.
+
+Todos usam `Http::fake(['*/api/mock/bureau/*' => Http::response(...)])` para simular o Bureau sem chamada de rede real (inclusive evitando o `sleep(5)` do cenário de timeout, que nunca é exercitado de fato — o que é testado é o app respeitando o `timeout()` configurado, não a espera real de 5 segundos).
+
+Para viabilizar os testes, foi criada `database/factories/AnaliseCreditoFactory.php` e adicionado o trait `HasFactory` ao model `AnaliseCredito`.
+
+---
+
 ## Mensagens de erro em português
 
 Além da implementação dos endpoints, foi feita uma mudança de configuração para adequar as mensagens de validação ao idioma do domínio:
