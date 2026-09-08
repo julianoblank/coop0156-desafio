@@ -137,6 +137,8 @@ O arquivo cobre exatamente os 10 cenários pedidos no enunciado, um teste para c
 
 Para viabilizar os testes, foi criada `database/factories/ClienteFactory.php` (não existia no scaffold) e adicionado o trait `HasFactory` ao model `Cliente`.
 
+Além desses, foram adicionados novos testes cobrindo edge cases.
+
 ---
 
 Análise de Crédito
@@ -302,3 +304,37 @@ Além da implementação dos endpoints, foi feita uma mudança de configuração
 - **Criado `lang/pt_BR/validation.php`** com a tradução completa das mensagens padrão de validação do Laravel (`required`, `unique`, `digits`, `email`, `gt`, etc.), incluindo nomes amigáveis para os atributos do domínio (`cpf` → CPF, `email` → e-mail, `renda_mensal` → renda mensal) e uma mensagem customizada para `cpf.digits`.
 
 Sem essa mudança, o Laravel usa suas mensagens padrão em inglês (ex.: `"The cpf field must be 11 digits."`). Com a alteração, o mesmo erro retorna como `"O CPF deve conter exatamente 11 dígitos numéricos."` — mais consistente com o restante da API e do enunciado, que são em pt-BR.
+
+---
+
+## Como Executar o Projeto
+
+A implementação e os testes deste desafio foram feitos usando a **Opção B — PHP local (sem Docker)** do enunciado original, sem depender do Laravel Sail:
+
+### Opção B — PHP local (sem Docker)
+
+> Requisitos: PHP 8.2+, Composer.
+> O projeto já vem configurado com **SQLite** no `.env.example` — nenhuma instalação de banco de dados é necessária.
+
+```bash
+# 1. Instalar dependências
+composer install
+
+# 2. Configurar o ambiente
+cp .env.example .env
+php artisan key:generate
+
+# 3. Criar o arquivo de banco SQLite e rodar as migrations
+touch database/database.sqlite
+php artisan migrate
+
+# 4. Iniciar o servidor
+php artisan serve
+# Acesse: http://localhost:8000
+
+# 5. Rodar os testes
+php artisan test
+
+# Worker da fila
+php artisan queue:work
+```

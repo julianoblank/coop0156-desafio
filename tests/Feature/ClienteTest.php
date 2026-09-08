@@ -130,4 +130,165 @@ class ClienteTest extends TestCase
 
         $response->assertNotFound();
     }
+
+    // --- Edge cases adicionais ---
+
+    public function test_nao_cria_cliente_com_cpf_com_menos_de_11_digitos(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '123456789',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 3000.00,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['cpf']);
+    }
+
+    public function test_nao_cria_cliente_com_cpf_nao_numerico(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '1234567890a',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 3000.00,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['cpf']);
+    }
+
+    public function test_nao_cria_cliente_com_email_formato_invalido(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '12345678901',
+            'email' => 'joao-sem-arroba.com',
+            'renda_mensal' => 3000.00,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['email']);
+    }
+
+    public function test_nao_cria_cliente_com_renda_mensal_negativa(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '12345678901',
+            'email' => 'joao@example.com',
+            'renda_mensal' => -100,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['renda_mensal']);
+    }
+
+    public function test_nao_cria_cliente_com_renda_mensal_igual_a_zero(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '12345678901',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 0,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['renda_mensal']);
+    }
+
+    public function test_nao_cria_cliente_com_renda_mensal_nao_numerica(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '12345678901',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 'muito rico',
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['renda_mensal']);
+    }
+
+    public function test_cria_cliente_sem_telefone(): void
+    {
+        $payload = [
+            'nome' => 'João da Silva',
+            'cpf' => '12345678901',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 3000.00,
+        ];
+
+        $response = $this->postJson('/api/clientes', $payload);
+
+        $response->assertCreated();
+
+        $this->assertDatabaseHas('clientes', ['cpf' => '12345678901', 'telefone' => null]);
+    }
+
+    public function test_atualizacao_permite_manter_proprio_cpf_e_email(): void
+    {
+        $cliente = Cliente::factory()->create(['cpf' => '12345678901', 'email' => 'joao@example.com']);
+
+        $payload = [
+            'nome' => 'Nome Atualizado',
+            'cpf' => '12345678901',
+            'email' => 'joao@example.com',
+            'renda_mensal' => 5000.00,
+        ];
+
+        $response = $this->putJson("/api/clientes/{$cliente->id}", $payload);
+
+        $response->assertOk()->assertJsonFragment(['nome' => 'Nome Atualizado']);
+    }
+
+    public function test_nao_atualiza_cliente_com_cpf_de_outro_cliente(): void
+    {
+        Cliente::factory()->create(['cpf' => '11111111111']);
+        $cliente = Cliente::factory()->create(['cpf' => '22222222222']);
+
+        $response = $this->putJson("/api/clientes/{$cliente->id}", ['cpf' => '11111111111']);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['cpf']);
+    }
+
+    public function test_nao_atualiza_cliente_com_email_de_outro_cliente(): void
+    {
+        Cliente::factory()->create(['email' => 'existente@example.com']);
+        $cliente = Cliente::factory()->create(['email' => 'proprio@example.com']);
+
+        $response = $this->putJson("/api/clientes/{$cliente->id}", ['email' => 'existente@example.com']);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['email']);
+    }
+
+    public function test_nao_atualiza_cliente_com_email_invalido(): void
+    {
+        $cliente = Cliente::factory()->create();
+
+        $response = $this->putJson("/api/clientes/{$cliente->id}", ['email' => 'formato-invalido']);
+
+        $response->assertStatus(422)->assertJsonValidationErrors(['email']);
+    }
+
+    public function test_retorna_404_ao_atualizar_cliente_inexistente(): void
+    {
+        $response = $this->putJson('/api/clientes/999999', ['nome' => 'Qualquer Nome']);
+
+        $response->assertNotFound();
+    }
+
+    public function test_lista_clientes_retorna_vazia_quando_nao_ha_registros(): void
+    {
+        $response = $this->getJson('/api/clientes');
+
+        $response->assertOk()->assertJsonCount(0, 'data');
+    }
 }
