@@ -1,276 +1,149 @@
-# Desafio Técnico: Sistema de Análise de Crédito Cooperativo (Coop0156)
+# Coop0156
 
-Seja bem-vindo ao desafio técnico para a vaga de desenvolvedor PHP/Laravel. Este desafio foi estruturado para avaliar sua capacidade de lidar com integração de APIs, regras de negócio, organização de código e testes automatizados de forma prática e realista.
-
----
-
-## 📌 Contexto do Domínio
-
-Você está trabalhando no desenvolvimento da **Coop0156**, uma plataforma interna de uma cooperativa para cadastro de clientes, simulação e contratação de crédito.
-
-O fluxo completo do sistema consiste em:
-
-1. **Cadastrar** um cliente na plataforma (CRUD completo).
-2. **Solicitar uma análise de crédito** para um cliente, consultando um Bureau de Crédito externo para obter o Score.
-3. **Aplicar regras de elegibilidade** (renda mínima, faixas de score com taxa de juros, comprometimento de renda).
-4. **Visualizar a simulação** das condições (parcelas, taxa, valor total) em uma tela dedicada.
-5. **Confirmar a contratação** do crédito aprovado.
+Este documento descreve a implementação do desafio do sicredi, endpoint por endpoint: o que foi feito, por que foi feito daquela forma e como as validações foram garantidas.
 
 ---
 
-## 🛠️ O Que Foi Entregue (Scaffold)
+## Estratégia geral
 
-Para otimizar o seu tempo, as estruturas básicas já estão prontas:
+Antes de entrar em cada endpoint, duas decisões estruturais valem a pena ser explicadas porque afetam todos os métodos:
 
-1. **Interface (Frontend):** View Blade pré-estilizada em `resources/views/analise.blade.php` (tela inicial) e `resources/views/simulacao.blade.php` (tela de simulação). O HTML/CSS está pronto — **o candidato implementa o JavaScript**.
-2. **Rotas:**
-   - `routes/api.php` com as rotas do CRUD de clientes (`apiResource`) e as rotas de análise de crédito.
-   - `routes/web.php` com as rotas Web da interface visual (`/` e `/simulacao/{id}`).
-3. **Configuração do Bureau:** URL e timeout da API externa configurados em `config/services.php` via variáveis de ambiente no `.env`.
-4. **Migrations:**
-   - `create_analises_credito_table` — estrutura da tabela de análises.
-   - `create_clientes_table` — estrutura da tabela de clientes, já com a chave estrangeira vinculando as análises.
-5. **Models:** `Cliente` (com relacionamento `hasMany` de análises) e `AnaliseCredito` (com `belongsTo` de cliente), com Enums `StatusAnalise` e `TipoCredito` mapeados.
-6. **Controllers Stub:** `ClienteController` (CRUD completo a implementar) e `AnaliseCreditoController` (análise e contratação a implementar).
-7. **Bureau API Mock:** Rota interna `/api/mock/bureau/{cpf}` que simula o Bureau externo — **não alterar**.
+- **Form Requests dedicados** (`StoreClienteRequest` e `UpdateClienteRequest`) em vez de validar dentro do controller com `$request->validate(...)`. Isso segue a recomendação explícita do desafio ("validações com Form Request") e mantém o controller enxuto — a responsabilidade de validar dados de entrada não é do controller, é da camada de request.
+- **Route Model Binding** (`Cliente $cliente` como parâmetro do método, em vez de `$id`). O Laravel resolve o `Cliente` automaticamente a partir do parâmetro de rota e, se não existir, lança `ModelNotFoundException` antes mesmo do método do controller ser executado. Como o `bootstrap/app.php` já força `shouldRenderJsonWhen` para rotas `api/*`, essa exceção vira automaticamente um JSON 404 — sem precisar de `findOrFail` manual em cada método.
+- **Mensagens de validação em português.** Por padrão o Laravel vem com `APP_LOCALE=en`, então as mensagens de erro do `unique`, `digits`, `required` etc. saem em inglês (`"The cpf field must be 11 digits."`). Como o domínio e a API são em pt-BR, alterei `APP_LOCALE` para `pt_BR` no `.env`/`.env.example` e criei `lang/pt_BR/validation.php` com as traduções (incluindo os nomes amigáveis dos atributos, como "e-mail" e "renda mensal"). Assim o 422 retorna, por exemplo, `"O campo cpf já está em uso."` em vez do texto em inglês.
 
 ---
+CRUD de Clientes
+## `GET /api/clientes` — `index`
 
-## 🚀 O Que Você Precisa Implementar
-
-O desafio está dividido em 4 etapas obrigatórias + 1 diferencial:
-
----
-
-### 1. CRUD de Clientes
-
-Implemente o `ClienteController` com as 5 operações do CRUD de forma completa e com boas práticas:
-
-- **`GET /api/clientes`** — Lista paginada de clientes.
-- **`POST /api/clientes`** — Cria um novo cliente com validação dos campos:
-  - `nome`: obrigatório
-  - `cpf`: obrigatório, exatamente 11 dígitos numéricos, único
-  - `email`: obrigatório, formato válido, único
-  - `telefone`: opcional
-  - `renda_mensal`: obrigatório, numérico positivo
-- **`GET /api/clientes/{id}`** — Exibe um cliente (404 se não encontrado).
-- **`PUT /api/clientes/{id}`** — Atualiza um cliente com validação.
-- **`DELETE /api/clientes/{id}`** — Remove um cliente (204 em sucesso).
-
-**Boas práticas esperadas:** validações com Form Request, retorno de erros claros, código limpo e organizado.
-
----
-
-### 2. Integração com o Bureau e Regras de Negócio
-
-Implemente o método `solicitar` do `AnaliseCreditoController`:
-
-**Fluxo esperado:**
-1. Validar os dados de entrada.
-2. **Localizar ou cadastrar o cliente:** buscar pelo CPF informado. Se o cliente não existir, criá-lo automaticamente com os dados recebidos (`nome`, `cpf`, `renda_mensal`). Use `firstOrCreate` ou estratégia equivalente. A análise deve sempre estar vinculada a um `cliente_id` válido.
-3. Persistir a análise com status `pendente`, associada ao cliente.
-4. Consultar a API do Bureau via `Http::` do Laravel: `GET /api/mock/bureau/{cpf}`.
-5. Tratar os possíveis cenários de falha do Bureau (veja a seção de testes abaixo).
-6. Aplicar as regras de crédito e atualizar a análise no banco.
-
-> **Por que esse fluxo?** A interface não possui uma tela separada de cadastro de clientes — o foco do desafio está nas boas práticas de API REST e nas regras de negócio. O CRUD de clientes (`ClienteController`) deve ser implementado e testado via testes automatizados, mas o cadastro em si é automatizado durante a solicitação de crédito.
-
-**Regras de crédito a implementar:**
-
-| Condição | Resultado |
-|---|---|
-| Renda mensal < R$ 1.500,00 | Reprovado — `"Renda mínima insuficiente"` |
-| Score < 400 | Reprovado — `"Score de crédito muito baixo"` |
-| Score entre 400 e 699 | Aprovado — taxa de **4,5% ao mês** |
-| Score ≥ 700 | Aprovado — taxa de **2,9% ao mês** |
-| Parcela > 30% da renda mensal | Reprovado — `"Comprometimento de renda superior a 30%"` |
-
-**Cálculo da parcela:**
-O crédito é dividido em **12 parcelas fixas**, com juros simples aplicados sobre o valor solicitado.
-
-**Exemplo:** para um valor solicitado de R$ 10.000,00 com taxa de 2,9% ao mês:
-- Juros totais: `10.000 × 2,9% × 12 = R$ 3.480,00`
-- Valor total a pagar: `10.000 + 3.480 = R$ 13.480,00`
-- Parcela: `13.480 / 12 = R$ 1.123,33`
-
-A parcela não pode ultrapassar 30% da renda mensal informada.
-
-> 💡 **Nota:** o cálculo financeiro em si não é o foco de avaliação deste desafio — é apenas a regra de negócio de exemplo do domínio. Pequenas variações de arredondamento ou de fórmula não serão penalizadas, desde que a aplicação das faixas de score, renda mínima e comprometimento de renda esteja correta.
-
----
-
-### 3. Tela de Simulação e Contratação
-
-A tela de simulação (`/simulacao/{id}`) já está pronta visualmente. O candidato precisa:
-
-- **No frontend (`analise.blade.php`):** ao receber uma resposta **aprovada**, exibir o resultado e um link/botão que direcione o usuário para `/simulacao/{id}`.
-- **Na tela de simulação (`simulacao.blade.php`):** implementar o JavaScript do botão **"Confirmar Contratação"**, que deve disparar `POST /api/analise-credito/{id}/contratar`.
-- **No backend (`contratar`):** validar que a análise existe e está com status `aprovado`, atualizar para `contratado` e retornar sucesso.
-
----
-
-### 4. Testes Automatizados
-
-Os testes estão divididos em dois arquivos:
-
-#### `tests/Feature/AnaliseCreditoTest.php`
-
-Complete este arquivo com testes cobrindo:
-
-- Aprovação com score alto (taxa de 2,9%).
-- Aprovação com score médio (taxa de 4,5%).
-- Reprovação por renda insuficiente.
-- Reprovação por score baixo.
-- Reprovação por comprometimento de renda.
-- Falha da API do Bureau (HTTP 500): a aplicação deve retornar resposta limpa, sem crash.
-- Confirmação de contratação (`contratar`) com análise aprovada.
-- Criação automática do cliente ao solicitar análise com CPF novo.
-
-Use `Http::fake()` para simular as respostas do Bureau sem chamadas reais de rede.
-
-#### `tests/Feature/ClienteTest.php` _(criar este arquivo)_
-
-Crie e complete este arquivo cobrindo os endpoints do CRUD de clientes:
-
-- Criação de cliente com dados válidos (201).
-- Falha de validação ao criar cliente sem campos obrigatórios (422).
-- Falha ao criar cliente com CPF duplicado (422).
-- Falha ao criar cliente com e-mail duplicado (422).
-- Listagem paginada de clientes (200).
-- Exibição de cliente existente por ID (200).
-- Retorno 404 ao buscar cliente inexistente.
-- Atualização parcial de cliente existente (200).
-- Remoção de cliente existente (204 sem body).
-- Retorno 404 ao tentar remover cliente inexistente.
-
----
-
-### ⭐ Diferencial Opcional — Filas (Laravel Queues)
-
-Se quiser ir além, ao invés de atualizar o status para `contratado` diretamente no método `contratar`, implemente:
-
-1. Atualize o status para `processando_contratacao` e dispare o `ProcessarContratacaoJob` para a fila.
-2. No Job, finalize a contratação: atualize para `contratado` e registre um log de sucesso.
-3. Configure `QUEUE_CONNECTION=database` no `.env` e execute `php artisan queue:work` em um terminal separado.
-
----
-
-### ⭐ Diferencial Opcional — Vá Além
-
-Se sobrar tempo e você quiser mostrar mais do seu repertório, sinta-se à vontade para agregar valor ao projeto além do solicitado — por exemplo, uma tela de cadastro/listagem de clientes, melhorias de UX nas telas existentes, validações extras no frontend, etc. Não é obrigatório e não substitui nenhum dos itens obrigatórios acima, mas é visto como diferencial positivo.
-
----
-
-## 🧪 Comportamento da API Mock do Bureau
-
-A rota `/api/mock/bureau/{cpf}` responde baseada no **último dígito do CPF** (apenas números):
-
-| Último dígito do CPF | Retorno |
-|---|---|
-| `1` | Score **150** — útil para testar reprovação por score baixo |
-| `2` | Score **550** — útil para testar aprovação com taxa de 4,5% |
-| `3` | Score **850** — útil para testar aprovação com taxa de 2,9% |
-| `4` | **HTTP 500** — útil para testar resiliência a falha do Bureau |
-| `5` | **Delay de 5s** — útil para testar tratamento de timeout |
-| `6` | JSON **sem a chave `score`** — útil para testar resposta malformada |
-| Qualquer outro | Score **600** padrão |
-
----
-
-## 🚀 Como Executar o Projeto
-
-Você pode escolher entre duas abordagens abaixo. **A Opção A (Sail) é a recomendada** — é o ambiente usado na avaliação — mas a Opção B também é válida se preferir não usar Docker.
-
----
-
-### Opção A — Laravel Sail (Docker) — recomendada
-
-> Requisitos: Docker Desktop (ou Docker + Docker Compose) instalado e em execução.
-> No Windows, recomenda-se usar o WSL 2 com Docker integrado.
->
-> Como o `vendor/` não está versionado no repositório, é necessário instalar as dependências via Docker antes de subir o Sail (que também é instalado via Composer).
-
-```bash
-# 1. Instalar dependências via Docker (não requer PHP instalado localmente)
-docker run --rm -u "$(id -u):$(id -g)" \
-    -v "$(pwd):/var/www/html" \
-    -w /var/www/html \
-    laravelsail/php83-composer:latest \
-    composer install --ignore-platform-reqs
-
-# 2. Configurar o ambiente
-cp .env.example .env
-
-# 3. Subir os containers em background
-./vendor/bin/sail up -d
-
-# 4. Gerar a chave da aplicação e rodar as migrations
-./vendor/bin/sail artisan key:generate
-./vendor/bin/sail artisan migrate
-
-# Acesse: http://localhost
-
-# 5. Rodar os testes
-./vendor/bin/sail artisan test
-
-# ⭐ Opcional: Worker da fila (apenas se implementar o diferencial)
-./vendor/bin/sail artisan queue:work
-
-# Para encerrar os containers
-./vendor/bin/sail down
+```php
+public function index(): JsonResponse
+{
+    return response()->json(Cliente::paginate(15));
+}
 ```
 
+**Por quê:** o desafio pede "lista paginada de clientes". `paginate(15)` já resolve isso sem precisar computar `offset`/`limit` manualmente, e o Eloquent monta a resposta com `data`, links de paginação (`next_page_url`, `prev_page_url` etc.) e metadados (`current_page`, `total`, `per_page`). Não há filtros ou parâmetros exigidos pelo enunciado, então não adicionei nada além do necessário (sem ordenação customizada, sem parâmetro de `per_page` configurável).
+
 ---
 
-### Opção B — PHP local (sem Docker)
+## `POST /api/clientes` — `store`
 
-> Requisitos: PHP 8.2+, Composer.
-> O projeto já vem configurado com **SQLite** no `.env.example` — nenhuma instalação de banco de dados é necessária.
+```php
+public function store(StoreClienteRequest $request): JsonResponse
+{
+    $cliente = Cliente::create($request->validated());
 
-```bash
-# 1. Instalar dependências
-composer install
-
-# 2. Configurar o ambiente
-cp .env.example .env
-php artisan key:generate
-
-# 3. Criar o arquivo de banco SQLite e rodar as migrations
-touch database/database.sqlite
-php artisan migrate
-
-# 4. Iniciar o servidor
-php artisan serve
-# Acesse: http://localhost:8000
-
-# 5. Rodar os testes
-php artisan test
-
-# ⭐ Opcional: Worker da fila (apenas se implementar o diferencial)
-php artisan queue:work
+    return response()->json($cliente, 201);
+}
 ```
 
+**Validação (`StoreClienteRequest`):**
+
+```php
+'nome' => ['required', 'string', 'max:255'],
+'cpf' => ['required', 'digits:11', 'unique:clientes,cpf'],
+'email' => ['required', 'email', 'max:255', 'unique:clientes,email'],
+'telefone' => ['nullable', 'string', 'max:20'],
+'renda_mensal' => ['required', 'numeric', 'gt:0'],
+```
+
+**Como cada regra do enunciado foi garantida:**
+
+- `cpf`: "exatamente 11 dígitos numéricos" → `digits:11` (não `max:11`/`min:11`, que aceitariam menos dígitos com padding ou strings não numéricas — `digits` exige exatamente 11 caracteres, todos dígitos). "único" → `unique:clientes,cpf`, que gera 422 com mensagem de erro em português (ex.: "O campo cpf já está em uso.") se já existir.
+- `email`: "formato válido" → regra `email` nativa do Laravel. "único" → `unique:clientes,email`.
+- `telefone`: "opcional" → `nullable`, sem `required`.
+- `renda_mensal`: "numérico positivo" → `numeric` (aceita decimais, já que a coluna é `decimal(15,2)`) combinado com `gt:0` (estritamente maior que zero — `min:0` deixaria passar renda igual a zero, o que não é "positivo").
+
+Se a validação falhar, o Laravel já retorna 422 com o corpo `{"message": ..., "errors": {...}}` automaticamente — não precisei tratar isso manualmente no controller.
+
+O `store` retorna `201 Created` com o cliente recém-criado no corpo, seguindo a convenção REST para criação de recursos.
+
 ---
 
-## 📤 Como Entregar
+## `GET /api/clientes/{cliente}` — `show`
 
-1. Crie um **repositório público** (ou privado, dando acesso ao avaliador) no seu GitHub/GitLab pessoal com o código do desafio.
-2. Faça commits ao longo do desenvolvimento (evite um único commit gigante no final — o histórico de commits também é avaliado).
-3. Inclua no repositório um **README próprio** descrevendo o que foi realizado — quais etapas você implementou, o que ficou de fora (se houver) — e, se quiser, suas decisões técnicas e considerações sobre o desenvolvimento.
-4. Ao finalizar, envie o **link do repositório** por e-mail para **jonathan_peixoto@sicredi.com.br**, dentro do prazo combinado de uma semana.
+```php
+public function show(Cliente $cliente): JsonResponse
+{
+    return response()->json($cliente);
+}
+```
 
-## 📬 Dúvidas
-
-Surgiu alguma dúvida durante o desenvolvimento? Entre em contato pelo e-mail **jonathan_peixoto@sicredi.com.br**. Fique à vontade para perguntar sobre qualquer ponto do enunciado que não tenha ficado claro.
+**Por quê:** com o route model binding, se o `id` na URL não corresponder a nenhum cliente, o Laravel já responde 404 antes de o método ser chamado — não há necessidade de `Cliente::find($id)` + checagem manual de `null`. Isso elimina duplicação da lógica de "404 se não encontrado" em `show`, `update` e `destroy`.
 
 ---
 
-## 🏆 Critérios de Avaliação
+## `PUT /api/clientes/{cliente}` — `update`
 
-1. **Boas práticas de API REST:** Validações, Form Requests, retorno de erros adequados, uso correto de HTTP status codes.
-2. **Organização do código:** Separação de responsabilidades — a lógica de negócio não deve ficar no Controller. Criação de Services ou Actions é recomendada.
-3. **Resiliência na integração HTTP:** Tratamento correto de timeouts e erros do Bureau — a aplicação não pode travar ou retornar erro 500 inesperado.
-4. **Qualidade dos testes:** Cobertura dos cenários relevantes, uso de `Http::fake()`, edge cases contemplados.
-5. **Consistência e clareza:** Nomenclatura consistente, uso consciente de recursos do framework, código limpo, commits descritivos e versionamento.
+```php
+public function update(UpdateClienteRequest $request, Cliente $cliente): JsonResponse
+{
+    $cliente->update($request->validated());
 
-Boa sorte! Mostre-nos o seu melhor código. 🚀
+    return response()->json($cliente);
+}
+```
+
+**Validação (`UpdateClienteRequest`):** as mesmas regras do `store`, com duas diferenças importantes:
+
+```php
+$cliente = $this->route('cliente');
+
+'nome' => ['sometimes', 'required', 'string', 'max:255'],
+'cpf' => ['sometimes', 'required', 'digits:11', Rule::unique('clientes', 'cpf')->ignore($cliente)],
+'email' => ['sometimes', 'required', 'email', 'max:255', Rule::unique('clientes', 'email')->ignore($cliente)],
+'telefone' => ['nullable', 'string', 'max:20'],
+'renda_mensal' => ['sometimes', 'required', 'numeric', 'gt:0'],
+```
+
+**Por quê `sometimes`:** a atualização é **parcial** — o cliente da API pode enviar só o campo que quer alterar (ex.: só `nome`), sem precisar reenviar o registro inteiro. `sometimes` faz a regra só ser aplicada quando o campo está presente no payload; se estiver ausente, é simplesmente ignorado (o valor atual no banco não é tocado). Quando o campo *é* enviado, o `required` dentro do array ainda garante que ele não venha vazio (`""`/`null`), e as demais regras (`digits:11`, `email`, `gt:0` etc.) continuam valendo normalmente.
+
+**Por quê o `ignore()`:** sem ele, atualizar um cliente reenviando o próprio CPF/e-mail falharia a validação de unicidade contra si mesmo. `Rule::unique(...)->ignore($cliente)` exclui o próprio registro da checagem, mas ainda bloqueia CPF/e-mail pertencentes a **outro** cliente. O `$cliente` já vem resolvido pelo route model binding no momento em que o `FormRequest` monta as regras (a substituição de bindings acontece antes da validação), então não precisei buscar o modelo de novo dentro do `rules()`.
+
+Como `$request->validated()` só traz as chaves efetivamente enviadas, `$cliente->update($request->validated())` atualiza apenas os campos presentes no payload — os demais atributos do model permanecem inalterados, tanto no banco quanto na resposta JSON.
+
+---
+
+## `DELETE /api/clientes/{cliente}` — `destroy`
+
+```php
+public function destroy(Cliente $cliente): JsonResponse
+{
+    $cliente->delete();
+
+    return response()->json(null, 204);
+}
+```
+
+**Por quê:** 404 automático via route model binding se o cliente não existir (mesmo raciocínio do `show`). Em caso de sucesso, retorna `204 No Content` com corpo vazio, exatamente como pedido no enunciado.
+
+---
+
+## Testes (`tests/Feature/ClienteTest.php`)
+
+O arquivo cobre exatamente os 10 cenários pedidos no enunciado, um teste para cada:
+
+1. Criação de cliente com dados válidos (201).
+2. Falha de validação ao criar cliente sem campos obrigatórios (422).
+3. Falha ao criar cliente com CPF duplicado (422).
+4. Falha ao criar cliente com e-mail duplicado (422).
+5. Listagem paginada de clientes (200).
+6. Exibição de cliente existente por ID (200).
+7. Retorno 404 ao buscar cliente inexistente.
+8. Atualização parcial de cliente existente (200) — envia só `nome` e confirma que CPF/e-mail permanecem os mesmos no banco.
+9. Remoção de cliente existente (204 sem body).
+10. Retorno 404 ao tentar remover cliente inexistente.
+
+Para viabilizar os testes, foi criada `database/factories/ClienteFactory.php` (não existia no scaffold) e adicionado o trait `HasFactory` ao model `Cliente`.
+
+---
+
+## Mensagens de erro em português
+
+Além da implementação dos endpoints, foi feita uma mudança de configuração para adequar as mensagens de validação ao idioma do domínio:
+
+- **`APP_LOCALE` alterado de `en` para `pt_BR`** em `.env` e `.env.example` (mantendo `APP_FALLBACK_LOCALE=en` como fallback).
+- **Criado `lang/pt_BR/validation.php`** com a tradução completa das mensagens padrão de validação do Laravel (`required`, `unique`, `digits`, `email`, `gt`, etc.), incluindo nomes amigáveis para os atributos do domínio (`cpf` → CPF, `email` → e-mail, `renda_mensal` → renda mensal) e uma mensagem customizada para `cpf.digits`.
+
+Sem essa mudança, o Laravel usa suas mensagens padrão em inglês (ex.: `"The cpf field must be 11 digits."`). Com a alteração, o mesmo erro retorna como `"O CPF deve conter exatamente 11 dígitos numéricos."` — mais consistente com o restante da API e do enunciado, que são em pt-BR.
