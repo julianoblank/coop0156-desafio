@@ -16,7 +16,7 @@ class ClienteController extends Controller
      */
     public function index(): JsonResponse
     {
-        return response()->json(Cliente::paginate(15));
+        return response()->json(Cliente::withCount('analises')->orderByDesc('id')->paginate(15));
     }
 
     /**
@@ -38,6 +38,9 @@ class ClienteController extends Controller
      */
     public function show(Cliente $cliente): JsonResponse
     {
+        $cliente->loadCount('analises');
+        $cliente->load(['analises' => fn ($query) => $query->orderByDesc('created_at')]);
+
         return response()->json($cliente);
     }
 
@@ -60,6 +63,12 @@ class ClienteController extends Controller
      */
     public function destroy(Cliente $cliente): JsonResponse
     {
+        if ($cliente->analises()->exists()) {
+            return response()->json([
+                'message' => 'Não é possível remover um cliente que possui análise de crédito vinculada.',
+            ], 422);
+        }
+
         $cliente->delete();
 
         return response()->json(null, 204);

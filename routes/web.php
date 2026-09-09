@@ -7,4 +7,8 @@ Route::get('/', function () {
     return view('analise');
 });
 
+Route::get('/clientes', function () {
+    return view('clientes');
+});
+
 Route::get('/simulacao/{id}', [SimulacaoController::class, 'show']);

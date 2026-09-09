@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Models\AnaliseCredito;
 use App\Models\Cliente;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
@@ -290,5 +291,19 @@ class ClienteTest extends TestCase
         $response = $this->getJson('/api/clientes');
 
         $response->assertOk()->assertJsonCount(0, 'data');
+    }
+
+    public function test_nao_remove_cliente_com_analise_de_credito_vinculada(): void
+    {
+        $cliente = Cliente::factory()->create();
+        AnaliseCredito::factory()->create(['cliente_id' => $cliente->id]);
+
+        $response = $this->deleteJson("/api/clientes/{$cliente->id}");
+
+        $response->assertStatus(422)->assertJsonFragment([
+            'message' => 'Não é possível remover um cliente que possui análise de crédito vinculada.',
+        ]);
+
+        $this->assertDatabaseHas('clientes', ['id' => $cliente->id]);
     }
 }
