@@ -265,11 +265,122 @@
       -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            // O candidato deve preencher a integração aqui.
-
             const form = document.getElementById('form-analise');
+            const btnSolicitar = document.getElementById('btn-solicitar');
+            const txtSolicitar = document.getElementById('txt-solicitar');
+            const loadingSpinner = document.getElementById('loading-spinner');
 
-            // TODO: Adicionar Event Listeners e requisições para a API Laravel.
+            const resultadoVazio = document.getElementById('resultado-vazio');
+            const resultadoAnalise = document.getElementById('resultado-analise');
+            const statusBadge = document.getElementById('status-indicator-badge');
+
+            const resNome = document.getElementById('res-nome');
+            const resCpf = document.getElementById('res-cpf');
+            const resScore = document.getElementById('res-score');
+            const resStatus = document.getElementById('res-status');
+
+            const dadosAprovado = document.getElementById('dados-aprovado');
+            const resTaxa = document.getElementById('res-taxa');
+            const resParcela = document.getElementById('res-parcela');
+            const resComprometimento = document.getElementById('res-comprometimento');
+
+            const dadosReprovado = document.getElementById('dados-reprovado');
+            const resMotivo = document.getElementById('res-motivo');
+
+            const containerContratacao = document.getElementById('container-contratacao');
+            const btnContratar = document.getElementById('btn-contratar');
+
+            const formatarMoeda = (valor) => Number(valor).toLocaleString('pt-BR', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            });
+
+            const alternarCarregamento = (carregando) => {
+                btnSolicitar.disabled = carregando;
+                loadingSpinner.classList.toggle('hidden', !carregando);
+                txtSolicitar.textContent = carregando ? 'Consultando...' : 'Solicitar Análise de Crédito';
+            };
+
+            const exibirResultado = (analise) => {
+                resultadoVazio.classList.add('hidden');
+                resultadoAnalise.classList.remove('hidden');
+
+                resNome.textContent = analise.nome;
+                resCpf.textContent = analise.cpf;
+                resScore.textContent = analise.score ?? '-';
+
+                const aprovado = analise.status === 'aprovado';
+
+                resStatus.textContent = aprovado ? 'Aprovado' : 'Reprovado';
+                resStatus.classList.toggle('text-emerald-400', aprovado);
+                resStatus.classList.toggle('text-red-400', !aprovado);
+
+                statusBadge.innerHTML = aprovado
+                    ? '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">Aprovado</span>'
+                    : '<span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-red-500/10 text-red-400 border border-red-500/20">Reprovado</span>';
+
+                dadosAprovado.classList.toggle('hidden', !aprovado);
+                dadosReprovado.classList.toggle('hidden', aprovado);
+                containerContratacao.classList.toggle('hidden', !aprovado);
+
+                if (aprovado) {
+                    const rendaMensal = Number(analise.renda_mensal);
+                    const valorParcela = Number(analise.valor_parcela);
+                    const comprometimento = (valorParcela / rendaMensal) * 100;
+
+                    resTaxa.textContent = `${Number(analise.taxa_juros).toLocaleString('pt-BR', { minimumFractionDigits: 1 })}% a.m.`;
+                    resParcela.textContent = `R$ ${formatarMoeda(valorParcela)}`;
+                    resComprometimento.textContent = `${comprometimento.toLocaleString('pt-BR', { maximumFractionDigits: 1 })}%`;
+
+                    btnContratar.onclick = () => {
+                        window.location.href = `/simulacao/${analise.id}`;
+                    };
+                } else {
+                    resMotivo.textContent = analise.motivo_rejeicao ?? 'Não foi possível aprovar esta solicitação.';
+                }
+            };
+
+            form.addEventListener('submit', async (event) => {
+                event.preventDefault();
+
+                alternarCarregamento(true);
+
+                const payload = {
+                    nome: document.getElementById('nome').value,
+                    cpf: document.getElementById('cpf').value.replace(/\D/g, ''),
+                    renda_mensal: parseFloat(document.getElementById('renda_mensal').value),
+                    tipo_credito: document.getElementById('tipo_credito').value,
+                    valor_solicitado: parseFloat(document.getElementById('valor_solicitado').value),
+                };
+
+                try {
+                    const response = await fetch('/api/analise-credito', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Accept': 'application/json',
+                        },
+                        body: JSON.stringify(payload),
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        const mensagem = data.errors
+                            ? Object.values(data.errors).flat().join('\n')
+                            : (data.message ?? 'Não foi possível processar a solicitação.');
+
+                        alert(mensagem);
+                        return;
+                    }
+
+                    exibirResultado(data);
+                } catch (error) {
+                    alert('Falha de comunicação com o servidor. Tente novamente.');
+                } finally {
+                    alternarCarregamento(false);
+                }
+            });
         });
     </script>
 </body>
