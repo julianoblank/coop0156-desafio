@@ -338,3 +338,13 @@ php artisan test
 # Worker da fila
 php artisan queue:work
 ```
+
+---
+
+## Extra: Tela de Clientes
+
+Foi implementada uma tela de CRUD de clientes (`/clientes`) — listagem paginada, cadastro, edição e remoção (bloqueada quando o cliente possui análise de crédito vinculada), consumindo os endpoints REST já existentes. O botão de acesso está no topo direito da `analise.blade.php`.
+
+O JavaScript foi implementado direto na view (mesmo padrão de `analise.blade.php` e `simulacao.blade.php`), pois usar o build do Vite traria uma complexidade que o desafio não pede e quebraria o padrão já seguido nas outras telas.
+
+Na coluna "Análises" da tabela, o número é um botão: ao clicar (quando o cliente tem pelo menos uma análise vinculada), abre um modal listando cada análise de crédito daquele cliente em uma linha (data, tipo, valor solicitado, score, status e parcela). Os dados vêm de `GET /api/clientes/{id}`, que passou a carregar também a relação `analises` (além do `analises_count` já existente) ordenada da mais recente para a mais antiga.
